@@ -1,0 +1,201 @@
+name: Build & deploy admin site
+
+on:
+  push:
+    branches: ["**"]
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: " Target Environment "
+        required: true
+        default: "development"
+        type: coice
+        options: [development,production]
+
+      run_mode:
+        description: " Ci_only = lint/test/build only. ci_cd = build/push/deploy."
+        required: true
+        default: "ci_only"
+        type: choice
+        options: [ci_only,ci_cd]  
+
+      deploy_reason:
+        description: " Reason / not for  this deployment" 
+        requied: false
+        default: "manual-trigger"
+
+permissions: 
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+   runs-on: ubuntu-latest
+
+   environment: >- 
+      ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.evironment ||
+        (github.ref == 'refs/heads/main' && 'production' || 'development') }}
+
+   steps:
+    - name: intent
+      id: meta
+      shell: bash
+      run: |
+        set -euo pipeline
+
+        RUN_MODE="${{ github.event.inputs.run_mode }}"
+        EVENT="${{ github.event_name }}"
+
+        if [ "$EVENT" = "push" ]; then
+          if [ "${{ github.ref }}" = " refs/heads/main" ] || [ "${{ github.ref}}" = "refs/heads/develop" ]; then
+            RUN_MODE="ci_cd"
+          else
+            RUN_MODE="ci_only"
+          fi
+        fi
+
+        #CI-only: never build/push, never deploy
+        if ["$RUN_MODE" = "ci_only" ]; then
+          TAG="ci-only-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
+          SHOULD_BUILD_AND_PUSH="false"
+          IS_DEPLOY=false
+
+        #CI-CD: always build/push, deploy only on main/develop
+        else 
+          if [ -n "${{ github.event.inputs.version_tag }}" ]; then  
+              TAG="${{ github.event.inputs.version_tag }}" 
+              SHOULD_BUILD_AND_PUSH=false
+              IS_ROLLBACK=false    
+          else
+              SHORT_SHA="${GITHUB_SHA::7}"
+             DATE_TAG=$(date +'%Y%m%d')
+              TAG="${DATE_TAG}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}"
+              SHOULD_BUILD_AND_PUSH=true
+              IS_ROLLBACK=false
+          fi 
+        fi  
+
+        FULL_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:${TAG}"
+
+        echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
+        echo "FULL_IMAGE=$FULL_IMAGE" >> "$GITHUB_OUTPUT"
+        echo "SHOULD_BUILD_AND_PUSH=$SHOULD_BUILD_AND_PUSH" >> "$GITHUB_OUTPUT"
+        echo "IS_ROLLBACK=$IS_ROLLBACK" >> "$GITHUB_OUTPUT"
+        echo "RUN_MODE=$RUN_MODE" >> "$GITHUB_OUTPUT"
+
+        echo "Run mode: $RUN_MODE"
+        echo "image: $FULL_IMAGE"
+        echo "Build & push: $SHOULD_BUILD_AND_PUSH
+
+    - name: Checkout code
+      if: steps.meta.ooutputs.IS_ROLLBACK != 'true'
+      uses: actions/checkout@v4
+
+    #------------------CI-only steps------------------
+    - name: setup Node
+      if: steps.meta.outputs.RUN_MODE == 'ci_only'
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22  
+        cache: npm
+    
+    - name: install deps
+      if: steps.meta.outputs.RUN_MODE == 'ci_only'
+      run: npm ci
+
+    - name: run lint
+      if: steps.meta.outputs.RUN_MODE == 'ci_only'
+      run: npm run lint
+
+    - name: audit deps
+      if: steps.meta.outputs.RUN_MODE == 'ci_only'
+      run: npm audit --audit-level=high
+
+    - name: Typecheck
+      if: steps.meta.outputs.RUN_MODE == 'ci_only'
+      run: npm run typecheck
+
+    - name: Build 
+      if: steps.meta.outputs.RUN_MODE == 'ci_only'
+      run: npm run build
+
+    - name: Trivy Scan
+      if: steps.meta.outputs.RUN_MODE == 'ci_only'
+      uses: aquasecurity/trivy-action@v0.35.0
+      with:
+        scan-type: fs
+        scan-ref: .
+        exit-code: 1
+        severity: CRITICAL,HIGH
+
+    #------------------CI-CD steps------------------
+    - name: login to ghcr
+      if: steps.meta.outputs.SHOULD_BUILD_AND_PUSH == 'true'
+      uses: docker/login-action@v3    
+      with:
+        registry: ghcr.io
+        username: ${{github.actor}}
+        password: ${{secrets.GITHUB_PAT}}
+
+    - name: print deploy context
+      if: steps.meta.outputs.RUN_MODE != 'ci_only'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "Tag: ${{steps.meta.outputs.TAG}}"
+        echo "IMAGE: ${{steps.meta.outputs.FULL_IMAGE}}"
+        echo "RUN_MODE: ${{steps.meta.outputs.RUN_MODE}}"
+        echo "Deploy reason: ${{ github.event.inputs.deploy_reason }}"
+
+    - name: set up Docker Buildx
+      if: steps.meta.outputs.SHOULD_BUILD_AND_PUSH == 'true'
+      uses: docker/setup-buildx-action@v3
+
+    - name: build image (scan only)
+      if: steps.meta.outputs.SHOULD_BUILD_AND_PUSH == 'true'
+      uses: docker/build-push-action@v6
+      with:
+         context: .
+         push: false
+         load: true
+         tags: scan-target:local
+         cache-from: type=registry,ref=ghcr.io/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:buildcache
+         cache-to: type=registry,ref=ghcr.io/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:buildcache
+         build-args: |
+          NEXT_PUBLIC_APP_URL=${{ vars.NEXT_PUBLIC_APP_URL }} 
+          BUILD_DATE=${{ github.run_started_at }}
+          VCS_REF=${{ github.sha }}
+
+    - name: Trivy image scan
+      if: steps.meta.outputs.SHOULD_BUILD_AND_PUSH == 'true'
+      uses: aquasecurity/trivy-action@v0.35.0
+      with:
+        image-ref: scan-target:local
+        format: table
+        exit-code: 1
+        ignore-unfixed: true
+        severity: CRITICAL,HIGH    
+
+    - name: tag image
+      if: steps.meta.outputs.SHOULD_BUILD_AND_PUSH == 'true'
+      run: |
+        docker tag scan-target:local ${{ steps.meta.outputs.FULL_IMAGE }}
+
+    - name: push image
+      if: steps.meta.outputs.SHOULD_BUILD_AND_PUSH == 'true'
+      run: |
+        docker push ${{ steps.meta.outputs.FULL_IMAGE }}
+
+    - name: Tag as latest (main only)
+      if: github.ref == 'refs/heads/main' && steps.meta.outputs.SHOULD_BUILD_AND_PUSH == 'true'
+      run: |
+        docker pull ${{ steps.meta.outputs.FULL_IMAGE }}
+        docker tag ${{ steps.meta.outputs.FULL_IMAGE }} ghcr.io/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:latest
+        docker push ghcr.io/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:latest
+
+    - name: generate SBOM
+      if: steps.meta.outputs.SHOULD_BUILD_AND_PUSH == 'true'
+      uses: anchor/sbom-action@v0.17.0
+      with:
+        format: spdx-json    
