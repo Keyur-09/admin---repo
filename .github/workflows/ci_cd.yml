@@ -40,8 +40,8 @@ jobs:
 
    env:
       REGISTRY: ghcr.io
-      IMAGE_OWNER: ${{ github.repository_owner }}
-      IMAGE_NAME: ${{ github.event.repository.name }}     
+      IMAGE_OWNER: keyur-09
+      IMAGE_NAME: admin---repo   
 
    steps:
     - name: intent
