@@ -193,10 +193,4 @@ jobs:
       run: |
         docker pull ${{ steps.meta.outputs.FULL_IMAGE }}
         docker tag ${{ steps.meta.outputs.FULL_IMAGE }} ghcr.io/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:latest
-        docker push ghcr.io/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:latest
-
-    - name: generate SBOM
-      if: steps.meta.outputs.SHOULD_BUILD_AND_PUSH == 'true'
-      uses: anchor/sbom-action@v0.17.0
-      with:
-        format: spdx-json    
+        docker push ghcr.io/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:latest   
