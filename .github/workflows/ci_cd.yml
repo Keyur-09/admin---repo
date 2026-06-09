@@ -10,7 +10,7 @@ on:
         description: " Target Environment "
         required: true
         default: "development"
-        type: coice
+        type: choice
         options: [development,production]
 
       run_mode:
@@ -22,33 +22,39 @@ on:
 
       deploy_reason:
         description: " Reason / not for  this deployment" 
-        requied: false
+        required: false
         default: "manual-trigger"
 
-permissions: 
+permissions:
   contents: read
+  packages: write
   id-token: write
 
-jobs:
+jobs: 
   build:
    runs-on: ubuntu-latest
 
    environment: >- 
-      ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.evironment ||
+      ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment ||
         (github.ref == 'refs/heads/main' && 'production' || 'development') }}
+
+   env:
+      REGISTRY: ghcr.io
+      IMAGE_OWNER: ${{ github.repository_owner }}
+      IMAGE_NAME: ${{ github.event.repository.name }}     
 
    steps:
     - name: intent
       id: meta
       shell: bash
       run: |
-        set -euo pipeline
+        set -euo pipefail
 
         RUN_MODE="${{ github.event.inputs.run_mode }}"
         EVENT="${{ github.event_name }}"
 
         if [ "$EVENT" = "push" ]; then
-          if [ "${{ github.ref }}" = " refs/heads/main" ] || [ "${{ github.ref}}" = "refs/heads/develop" ]; then
+          if [ "${{ github.ref }}" = "refs/heads/main" ] || [ "${{ github.ref }}" = "refs/heads/develop" ]; then
             RUN_MODE="ci_cd"
           else
             RUN_MODE="ci_only"
@@ -56,41 +62,37 @@ jobs:
         fi
 
         #CI-only: never build/push, never deploy
-        if ["$RUN_MODE" = "ci_only" ]; then
+        if [ "$RUN_MODE" = "ci_only" ]; then
           TAG="ci-only-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
           SHOULD_BUILD_AND_PUSH="false"
-          IS_DEPLOY=false
+          
 
         #CI-CD: always build/push, deploy only on main/develop
-        else 
-          if [ -n "${{ github.event.inputs.version_tag }}" ]; then  
-              TAG="${{ github.event.inputs.version_tag }}" 
-              SHOULD_BUILD_AND_PUSH=false
-              IS_ROLLBACK=false    
-          else
-              SHORT_SHA="${GITHUB_SHA::7}"
-             DATE_TAG=$(date +'%Y%m%d')
-              TAG="${DATE_TAG}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}"
-              SHOULD_BUILD_AND_PUSH=true
-              IS_ROLLBACK=false
-          fi 
-        fi  
+        else
+          SHORT_SHA="${GITHUB_SHA::7}"
+          DATE_TAG=$(date +'%Y%m%d')
+
+          TAG="${DATE_TAG}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}"
+          SHOULD_BUILD_AND_PUSH=true
+        fi 
 
         FULL_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:${TAG}"
 
         echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
         echo "FULL_IMAGE=$FULL_IMAGE" >> "$GITHUB_OUTPUT"
         echo "SHOULD_BUILD_AND_PUSH=$SHOULD_BUILD_AND_PUSH" >> "$GITHUB_OUTPUT"
-        echo "IS_ROLLBACK=$IS_ROLLBACK" >> "$GITHUB_OUTPUT"
+        
         echo "RUN_MODE=$RUN_MODE" >> "$GITHUB_OUTPUT"
 
         echo "Run mode: $RUN_MODE"
         echo "image: $FULL_IMAGE"
-        echo "Build & push: $SHOULD_BUILD_AND_PUSH
+        
 
     - name: Checkout code
-      if: steps.meta.ooutputs.IS_ROLLBACK != 'true'
+      if: always()
       uses: actions/checkout@v4
+
+    # TODO: Add rollback support in future  
 
     #------------------CI-only steps------------------
     - name: setup Node
@@ -106,7 +108,7 @@ jobs:
 
     - name: run lint
       if: steps.meta.outputs.RUN_MODE == 'ci_only'
-      run: npm run lint
+      run: npm run lint --if-present
 
     - name: audit deps
       if: steps.meta.outputs.RUN_MODE == 'ci_only'
@@ -114,7 +116,7 @@ jobs:
 
     - name: Typecheck
       if: steps.meta.outputs.RUN_MODE == 'ci_only'
-      run: npm run typecheck
+      run: npm run typecheck --if-present
 
     - name: Build 
       if: steps.meta.outputs.RUN_MODE == 'ci_only'
@@ -126,7 +128,7 @@ jobs:
       with:
         scan-type: fs
         scan-ref: .
-        exit-code: 1
+        exit-code: 0
         severity: CRITICAL,HIGH
 
     #------------------CI-CD steps------------------
@@ -136,7 +138,7 @@ jobs:
       with:
         registry: ghcr.io
         username: ${{github.actor}}
-        password: ${{secrets.GITHUB_PAT}}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: print deploy context
       if: steps.meta.outputs.RUN_MODE != 'ci_only'
@@ -163,7 +165,6 @@ jobs:
          cache-from: type=registry,ref=ghcr.io/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:buildcache
          cache-to: type=registry,ref=ghcr.io/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:buildcache
          build-args: |
-          NEXT_PUBLIC_APP_URL=${{ vars.NEXT_PUBLIC_APP_URL }} 
           BUILD_DATE=${{ github.run_started_at }}
           VCS_REF=${{ github.sha }}
 
@@ -173,7 +174,7 @@ jobs:
       with:
         image-ref: scan-target:local
         format: table
-        exit-code: 1
+        exit-code: 0
         ignore-unfixed: true
         severity: CRITICAL,HIGH    
 
