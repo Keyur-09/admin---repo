@@ -25,9 +25,10 @@ import ViewEnq from "./pages/ViewEnq";
 import ViewOrder from "./pages/ViewOrder";
 import { OpenRoutes } from "./routing/OpenRoutes";
 import { PrivateRoutes } from "./routing/PrivateRoutes";
+
 function App() {
   return (
-    <Router>
+    <Router basename="/admin">
       <Routes>
         <Route
           path="/"
@@ -37,10 +38,9 @@ function App() {
             </OpenRoutes>
           }
         />
-        {/* <Route path="/reset-password" element={<Resetpassword />} />
-        <Route path="/forgot-password" element={<Forgotpassword />} /> */}
+
         <Route
-          path="/admin"
+          path="/"
           element={
             <PrivateRoutes>
               <MainLayout />
