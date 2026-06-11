@@ -162,8 +162,8 @@ jobs:
          push: false
          load: true
          tags: scan-target:local
-         cache-from: type=registry,ref=ghcr.io/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:buildcache
-         cache-to: type=registry,ref=ghcr.io/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:buildcache
+        # cache-from: type=registry,ref=ghcr.io/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:buildcache
+        # cache-to: type=registry,ref=ghcr.io/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:buildcache
          build-args: |
           BUILD_DATE=${{ github.run_started_at }}
           VCS_REF=${{ github.sha }}
